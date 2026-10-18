@@ -10,7 +10,7 @@ This is the existing website from this conversation. The two instructions attach
 - Canonical Neon project: bitter-feather-57621019, tushar-jain-research
 - Production Neon branch: br-odd-base-b5clohwq
 - Existing isolated development branch: br-square-wind-b55var8e
-- Selected production host: Netlify Free, team vimal10121972, as explicitly instructed on 18 October 2026 at 16:34 IST. No equivalent Netlify site was found in the latest inventory. Do not resume Vercel deployment unless the user changes this choice.
+- Selected production host: Netlify Free, team vimal10121972, as explicitly instructed on 18 October 2026 at 16:34 IST. No equivalent Netlify site was found in the latest inventory. GitHub installation was repaired and the first scope commit succeeded on 18 October 2026. Do not resume Vercel deployment unless the user changes this choice.
 
 Do not change unrelated applications, including FundLens. Do not create new Work projects, repositories, databases, or parallel production deployments. Do not delete or rename existing resources. Inventory before any hosting creation. Preserve the financial engine, canonical database and repository across a necessary host migration. Keep only one active recovery scheduler.
 

@@ -1,0 +1,79 @@
+import ExcelJS from 'exceljs';
+import type { FinancialStatement, PricePoint } from './finance';
+
+export interface CompanyIdentity { id:string; name:string; symbol:string; nseSymbol?:string; bseCode?:string; isin:string; sector?:string; sourceUrl:string; retrievedAt:string }
+export interface SourceRecord { url:string; title:string; publisher:string; retrievedAt:string; period?:string; scope?:string; method?:string }
+export interface MarketData { price:number|null; asOf:string|null; currency:'INR'; adjusted:false; history:PricePoint[]; sources:SourceRecord[]; missing:string[]; limitations:string[] }
+export interface SourcedStatement extends FinancialStatement { periodType:'annual'|'quarterly'; accountingStandard:'IFRS'; scope:'consolidated'; sourceUrl:string; sourceSheet:string; nonControllingInterests?:number|null; dividendPerShare?:number|null; adjustments:string[] }
+export interface FinancialData { annual:SourcedStatement[]; quarterly:SourcedStatement[]; sources:SourceRecord[]; missing:string[]; conflicts:string[]; limitations:string[] }
+export interface EvidencePacket { company:CompanyIdentity; prices:MarketData; financials:FinancialData; sources:SourceRecord[]; missing:string[]; conflicts:string[]; limitations:string[]; retrievedAt:string }
+export const NSE_MASTER='https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv';
+export const TCS_IR='https://www.tcs.com/investor-relations/financial-statements';
+const now=()=>new Date().toISOString();
+const cache=new Map<string,{expires:number,value:unknown}>();
+async function cached<T>(key:string,ttl:number,fn:()=>Promise<T>):Promise<T>{const hit=cache.get(key);if(hit&&hit.expires>Date.now())return hit.value as T;const value=await fn();cache.set(key,{expires:Date.now()+ttl,value});return value;}
+async function download(url:string, timeout=15000):Promise<Uint8Array>{
+ const response=await fetch(url,{signal:AbortSignal.timeout(timeout),headers:{Accept:'text/csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/html;q=0.8'},cache:'no-store'});
+ if(!response.ok)throw new Error(`Official source returned HTTP ${response.status}`);
+ const declared=Number(response.headers.get('content-length')||0);if(declared>12_000_000)throw new Error('Source exceeds bounded download size');
+ const bytes=new Uint8Array(await response.arrayBuffer());if(bytes.length>12_000_000)throw new Error('Source exceeds bounded download size');return bytes;
+}
+/** RFC4180-style quoted cells; source headings and surrounding spaces normalized. */
+export function parseCsv(text:string):Record<string,string>[] {
+ const rows:string[][]=[];let row:string[]=[],cell='',quoted=false;
+ for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(quoted&&text[i+1]==='"'){cell+='"';i++;}else quoted=!quoted;}else if(c===','&&!quoted){row.push(cell.trim());cell='';}else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&text[i+1]==='\n')i++;row.push(cell.trim());if(row.some(Boolean))rows.push(row);row=[];cell='';}else cell+=c;}
+ if(quoted)throw new Error('Malformed CSV quotation');if(cell||row.length){row.push(cell.trim());rows.push(row);}const headers=rows.shift()?.map(x=>x.replace(/^\uFEFF/,'').trim())||[];
+ return rows.map(values=>Object.fromEntries(headers.map((h,i)=>[h,values[i]??''])));
+}
+export function parseCompanyMaster(text:string,retrievedAt=now()):CompanyIdentity[]{
+ const rows=parseCsv(text);if(!rows.length||!('ISIN NUMBER' in rows[0])||!('SYMBOL' in rows[0]))throw new Error('NSE security master schema changed');
+ return rows.filter(r=>r.SERIES==='EQ'&&/^IN[A-Z0-9]{10}$/.test(r['ISIN NUMBER'])).map(r=>({id:`NSE:${r['ISIN NUMBER']}`,name:r['NAME OF COMPANY'],symbol:r.SYMBOL,nseSymbol:r.SYMBOL,isin:r['ISIN NUMBER'],sourceUrl:NSE_MASTER,retrievedAt}));
+}
+async function companies(){return cached('nse-equity-master',6*60*60_000,async()=>parseCompanyMaster(new TextDecoder().decode(await download(NSE_MASTER))));}
+export async function searchCompanies(query:string):Promise<CompanyIdentity[]>{const q=query.trim().toLowerCase();if(q.length<2)return [];const all=await companies();return all.filter(c=>[c.name,c.symbol,c.isin].some(s=>s.toLowerCase().includes(q))).sort((a,b)=>Number(b.symbol.toLowerCase()===q)-Number(a.symbol.toLowerCase()===q)||a.name.localeCompare(b.name)).slice(0,25);}
+export async function verifyCompany(id:string):Promise<CompanyIdentity>{const company=(await companies()).find(c=>c.id===id);if(!company)throw new Error('Company identity is not in the current official NSE equity master; search and select again.');return company;}
+const numeric=(s:string|undefined)=>s!==undefined&&s.trim()!==''&&Number.isFinite(Number(s.replace(/,/g,'')))?Number(s.replace(/,/g,'')):null;
+function isoNseDate(s:string){const m=s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);const month=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m?.[2].toLowerCase()||'');return m&&month>=0?`${m[3]}-${String(month+1).padStart(2,'0')}-${m[1].padStart(2,'0')}`:null;}
+export function parseBhavcopy(text:string,company:CompanyIdentity,expectedDate:string):number|null {
+ const rows=parseCsv(text);if(!rows.length||!('CLOSE_PRICE'in rows[0])||!('DATE1'in rows[0]))throw new Error('NSE bhavcopy schema changed');
+ const row=rows.find(r=>r.SYMBOL===company.nseSymbol&&r.SERIES==='EQ'&&isoNseDate(r.DATE1)===expectedDate);const close=numeric(row?.CLOSE_PRICE);return close!==null&&close>0?close:null;
+}
+export function completedSessionCandidates(date=new Date()):string[]{
+ // NSE EOD data may be published after the close. Before 19:00 IST, start with yesterday.
+ const ist=new Date(date.getTime()+330*60_000);const hour=ist.getUTCHours();if(hour<19)ist.setUTCDate(ist.getUTCDate()-1);
+ const dates:string[]=[];for(let i=0;i<10&&dates.length<5;i++){if(ist.getUTCDay()!==0&&ist.getUTCDay()!==6)dates.push(ist.toISOString().slice(0,10));ist.setUTCDate(ist.getUTCDate()-1);}return dates;
+}
+export async function fetchMarketData(company:CompanyIdentity):Promise<MarketData>{
+ const dates=completedSessionCandidates();const results=await Promise.all(dates.map(async date=>{const [y,m,d]=date.split('-');const url=`https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_${d}${m}${y}.csv`;try{const text=await cached(url,60*60_000,async()=>new TextDecoder().decode(await download(url)));return {price:parseBhavcopy(text,company,date),date,url};}catch{return {price:null,date,url};}}));
+ const found=results.find(r=>r.price!==null);return {price:found?.price??null,asOf:found?.date??null,currency:'INR',adjusted:false,history:[],sources:found?[{url:found.url,title:'NSE official equity bhavcopy',publisher:'NSE',retrievedAt:now(),period:found.date,scope:'EQ series official closing price',method:'Exact NSE symbol + series + session date'}]:[],missing:found?['Corporate-action-adjusted price history']:['Recent official closing price','Corporate-action-adjusted price history'],limitations:['Price is a completed-session unadjusted close, not a live quote.','No technical indicators, beta or long-period returns are calculated from this single unadjusted price.',...(found&&found.date!==dates[0]?['Most recent candidate session unavailable; using the latest retrieved published session.']:[])]};
+}
+function cellValue(value:ExcelJS.CellValue):unknown {if(value&&typeof value==='object'&&'result'in value)return value.result;if(value&&typeof value==='object'&&'richText'in value)return value.richText.map(x=>x.text).join('');return value;}
+function textCell(cell:ExcelJS.Cell){return String(cellValue(cell.value)??'').trim();}
+function numberCell(cell:ExcelJS.Cell):number|null{const v=cellValue(cell.value);return typeof v==='number'&&Number.isFinite(v)?v:null;}
+function noteText(cell:ExcelJS.Cell){const note=cell.note;if(typeof note==='string')return note;if(note&&typeof note==='object')return note.texts?.map(t=>t.text).join('')||'';return '';}
+/** Prefer explicitly reported including-exceptional-items values over adjusted headline cells. */
+export function reportedCell(cell:ExcelJS.Cell,adjusted:boolean):{value:number|null;adjustment?:string}{const n=noteText(cell);if(/including/i.test(n)){const m=n.match(/(-?[\d,]+(?:\.\d+)?)\s+including/i);if(m)return {value:Number(m[1].replace(/,/g,'')),adjustment:n};}if(adjusted)return {value:null,adjustment:'Adjusted source value withheld: no unambiguous including-items comment.'};return {value:numberCell(cell)};}
+export async function parseTcsWorkbook(buffer:Uint8Array,url:string):Promise<FinancialData>{
+ const workbook=new ExcelJS.Workbook();await workbook.xlsx.load(buffer as never);
+ const annual=new Map<string,SourcedStatement>(),quarterly=new Map<string,SourcedStatement>();const conflicts:string[]=[];const sheets=['IFRS-PnL,BS-INR Historical','IFRS-PnL,BS-INR'];
+ for(const name of sheets){const sheet=workbook.getWorksheet(name);if(!sheet)continue;if(!/IFRS.*INR Mn/.test(textCell(sheet.getCell(1,1))))throw new Error('TCS workbook accounting basis or unit changed');
+ const rowMap=new Map<string,number[]>();sheet.eachRow((row,i)=>{const label=textCell(row.getCell(1)).toLowerCase();rowMap.set(label,[...(rowMap.get(label)||[]),i]);});
+ const row=(labels:string[],occurrence=0)=>labels.flatMap(l=>rowMap.get(l.toLowerCase())||[])[occurrence];
+ const incomeRow=row(['Operating Income']);if(!incomeRow)continue;
+ for(let col=2;col<=sheet.columnCount;col++){const header=textCell(sheet.getCell(1,col));if(!/^(FY\d{2}|[1-4]Q\d{2})$/.test(header))continue;const year=2000+Number(header.slice(-2));if(year<2016)continue;const periodType=header.startsWith('FY')?'annual':'quarterly';const period=periodType==='annual'?`FY${year}`:`Q${header[0]} FY${year}`;
+ const adjusted=/EX-ADJ/i.test(textCell(sheet.getCell(2,col)));const adjustments:string[]=[];
+ const get=(labels:string[],affected=false,occurrence=0,multiplier=1e6)=>{const rn=row(labels,occurrence);if(!rn)return null;const cell=sheet.getCell(rn,col);const result=affected?reportedCell(cell,adjusted):{value:numberCell(cell)};if(result.adjustment)adjustments.push(`${labels[0]}: ${result.adjustment}`);return result.value===null?null:result.value*multiplier;};
+ const ebit=get(['Operating Income'],true), netProfit=get(['Net Income Before Extraordinary Items'],true);const depRows=rowMap.get('depreciation')||[];const depreciation=name.includes('Historical')?(depRows.length===2?depRows.map(r=>numberCell(sheet.getCell(r,col))).reduce<number|null>((a,b)=>a===null||b===null?null:a+b,0):null):get(['Depreciation & Amortisation'],false,0,1);const dep=depreciation===null?null:depreciation*1e6;
+ const statement:SourcedStatement={fiscalPeriod:period,periodType,accountingStandard:'IFRS',scope:'consolidated',sourceUrl:url,sourceSheet:name,adjustments,revenue:get(['Total Revenue','Revenue']),ebit,netProfit,eps:get(['Basic and Diluted EPS (after adjusting for bonus shares)'],true,0,1),depreciation:dep,ebitda:ebit!==null&&dep!==null?ebit+dep:null,assets:get(['Total Assets']),liabilities:get(['Total Liabilities']),equity:get(["Total Shareholders' Equity"]),nonControllingInterests:get(['Non Controlling Interests']),cash:get(['Cash and Cash Equivalents']),currentAssets:get(['Total Current Assets']),currentLiabilities:get(['Total Current Liabilities']),dilutedShares:get(['Weighted average no of shares used in computing Basic and Diluted EPS'],false,0,1),dividendPerShare:get(['Dividend Per share (INR)'],false,0,1),debt:null,cfo:null,capex:null,dividends:null};
+ const dest=periodType==='annual'?annual:quarterly;const prior=dest.get(period);
+ if(prior){for(const key of ['assets','liabilities','depreciation']as const){if(prior[key]!==statement[key]){conflicts.push(`${period} ${key}: historical sheet ${prior[key]??'missing'} INR versus current sheet ${statement[key]??'missing'} INR. No explicit reconciliation found; this metric is withheld.`);statement[key]=null;if(key==='depreciation')statement.ebitda=null;}}}dest.set(period,statement);
+ }}
+ if(!annual.size)throw new Error('No validated annual IFRS INR columns found in TCS workbook');
+ const sort=(a:SourcedStatement,b:SourcedStatement)=>Number(a.fiscalPeriod.match(/\d{4}/)?.[0])-Number(b.fiscalPeriod.match(/\d{4}/)?.[0])||a.fiscalPeriod.localeCompare(b.fiscalPeriod);
+ return {annual:[...annual.values()].sort(sort).slice(-10),quarterly:[...quarterly.values()].sort(sort).slice(-12),sources:[{url,title:'TCS official consolidated IFRS financial data sheet',publisher:'Tata Consultancy Services',retrievedAt:now(),scope:'Annual and quarterly IFRS; source workbook marked unaudited; INR million converted to INR',method:'Explicit FY / quarter column labels, cached numeric formula results, reported including-items comments'}],missing:['Cash flow statement: CFO and capital expenditure','Complete interest-bearing debt and enterprise-value bridge','Current outstanding shares (weighted-average EPS shares are not current share count)','Five-year adjusted price history'],conflicts:[...new Set(conflicts)],limitations:['IFRS consolidated data; do not mix with standalone or Ind AS data without reconciliation.','Workbook is marked unaudited. Annual/quarterly columns remain separate.','Per-share EPS and dividends remain INR per share; weighted-average shares remain counts.','Reported including-exceptional-items cell comments replace adjusted headline earnings when unambiguous; otherwise affected metrics remain missing.','Ordinary shareholder equity excludes non-controlling interests. Balance-sheet reconciliation must include the separately disclosed nonControllingInterests.','Cash means cash and cash equivalents only; deposits and investments are not silently included.','No complete cash-flow statement is present: automatic FCFF valuation is blocked until missing inputs are sourced or explicitly supplied.']};
+}
+export async function fetchFinancials(company:CompanyIdentity):Promise<FinancialData>{
+ if(company.nseSymbol!=='TCS'||company.isin!=='INE467B01029')return {annual:[],quarterly:[],sources:[],missing:['Verified annual financial statements','Verified quarterly financial statements','Cash-flow statements and valuation inputs'],conflicts:[],limitations:['Official identity and market close are supported. Automated financial-statement extraction is currently validated only for TCS; no estimates replace missing reported data.']};
+ try{return await cached('tcs-financials',60*60_000,async()=>{const html=new TextDecoder().decode(await download(TCS_IR,15000));const paths=[...html.matchAll(/(?:https:\/\/www\.tcs\.com)?\/content\/dam\/tcs\/[^\s"<>]+TCS-Data-Sheet-Q[1-4]FY\d{2}\.xlsx/gi)].map(m=>m[0]);if(!paths.length)throw new Error('Official TCS financial workbook link unavailable');const path=paths.sort((a,b)=>{const av=a.match(/Q(\d)FY(\d+)/i)!,bv=b.match(/Q(\d)FY(\d+)/i)!;return Number(bv[2])*4+Number(bv[1])-Number(av[2])*4-Number(av[1]);})[0];const url=new URL(path,'https://www.tcs.com').toString();return parseTcsWorkbook(await download(url,10000),url);});}catch(error){return {annual:[],quarterly:[],sources:[{url:TCS_IR,title:'TCS financial statements',publisher:'Tata Consultancy Services',retrievedAt:now()}],missing:['Financial workbook retrieval or schema validation failed'],conflicts:[],limitations:[error instanceof Error?error.message:'Official source unavailable']};}
+}
+export async function fetchEvidence(company:CompanyIdentity):Promise<EvidencePacket>{const verified=await verifyCompany(company.id);const [prices,financials]=await Promise.all([fetchMarketData(verified),fetchFinancials(verified)]);return {company:verified,prices,financials,sources:[{url:verified.sourceUrl,title:'NSE equity security master',publisher:'NSE',retrievedAt:verified.retrievedAt},...prices.sources,...financials.sources],missing:[...prices.missing,...financials.missing],conflicts:financials.conflicts,limitations:[...prices.limitations,...financials.limitations],retrievedAt:now()};}

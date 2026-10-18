@@ -1,0 +1,14 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "24"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Next.js uses Netlify's automatically managed OpenNext adapter.
+# Secrets and ACTIVE_HOST must be configured in Netlify environment variables.
+# The single daily schedule is declared in research-daily.mts.
