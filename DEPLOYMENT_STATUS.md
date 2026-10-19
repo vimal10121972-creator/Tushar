@@ -1,6 +1,6 @@
 # Deployment checkpoint — 19 October 2026
 
-This file updates the deployment inventory in README.md. Work only on Tushar Jain Research.
+This checkpoint supersedes stale deployment inventory in README.md and PROJECT_SCOPE.md. Work only on Tushar Jain Research.
 
 ## Canonical resources
 
@@ -8,28 +8,36 @@ This file updates the deployment inventory in README.md. Work only on Tushar Jai
 - Netlify site: tushar-jain-research, ID e3168f93-4754-4dad-9753-f9cbeaeda6f7.
 - Netlify team: vimal10121972, ID 6ac0d46a5b92574ce5735ec6, Free.
 - Neon project: bitter-feather-57621019. Production branch br-odd-base-b5clohwq; development branch br-square-wind-b55var8e.
-- Do not create another site, repository, database project or scheduler. Do not deploy the inactive Vercel project.
+- Preserve these resources. No duplicate site, repository, database or scheduler; do not deploy the inactive Vercel project.
 
-## Verified state
+## Verified progress
 
-The user authorized the Netlify GitHub app installation for only Tushar. Installation succeeded. The existing Netlify site is private and has no successful deployment. Repository linking is prepared in the site's own Link repository flow, with main, npm run build, .next and netlify/functions. The final Deploy Tushar action has not been submitted.
+GitHub app installation and linking to the existing Tushar repository succeeded.
 
-On 19 October the Netlify connector reported a successful ACTIVE_HOST environment-variable upsert, but both its read-back and the Netlify dashboard showed no variables. The previous six upserts were therefore not confirmed persisted. Do not assume secrets are stored. The cloud-browser form is the next supported configuration route, after destination-specific approval for credentials/secrets.
+The user explicitly approved the additive production database setup and secure Netlify configuration on 19 October. The research schema, ten tables, two indexes and restricted research_app role were created in the canonical production database. The restricted connection was verified: ten visible research tables, no Neon Auth schema access. Existing data and managed Neon Auth were preserved. The Netlify application origin was added to managed Auth trusted domains.
 
-## Approval blocker
+All seven production environment variables were saved through the actual project environment import form and verified in the dashboard: DATABASE_URL, NEON_AUTH_BASE_URL, NEON_AUTH_COOKIE_SECRET, CRON_SECRET, OWNER_EMAIL, APP_URL, ACTIVE_HOST. Values are secret, production-only, scoped to Builds/Functions/Runtime. Earlier connector writes did not persist; do not rely on their success messages.
 
-Automatic approval review rejected the production migration transaction because it interpreted the instruction to keep the canonical database unchanged as forbidding schema and role additions. Do not retry or bypass this rejection without explicit clarification/approval.
+Production research.settings.active_host is still disabled. No production report processing was enabled.
 
-The prepared change uses migrations/001_research.sql: a research schema, ten application tables, two indexes, and an initially disabled host setting. The proposed application login role research_app receives CRUD only on research tables and sequence access, not Neon Auth tables. Existing data and the existing Neon Auth service remain in place. Deployment additionally needs its actual HTTPS origin allowed in managed Neon Auth and the production connection stored securely in this Netlify project.
+## Build status and precise blocker
 
-The rejected transaction did not execute. Production research tables and role have not been created by this workflow. No production job processing has been activated.
+No successful deployment yet. First deploy 6ad5fad1864fd492f46c086c failed because the cookie secret was missing. After secure settings were saved, retry 6ad65861225bf91323d047fa passed Next.js compilation, type checking, page generation and native function packaging.
 
-## Remaining work
+The retry then failed secret scanning solely because ACTIVE_HOST's public value, netlify, was marked secret during bulk import and naturally occurs in source files. This is a public host label, not a credential.
 
-1. Obtain explicit approval for the additive production schema/role, its runtime permissions, login-origin configuration, and secure storage of the Neon connection/app secrets in Netlify.
-2. Recheck production state, apply the reviewed migration once, provision the restricted role and securely configure the seven production environment variables.
-3. Finish linking this existing site to Tushar and deploy. Verify persistence, build and native background/scheduled functions.
-4. Activate only Netlify after checks. Verify sign-in, private authorization, resumable report processing and PDF download before delivering a usable URL.
-5. Retain honest evidence-gap disclosures: current financial-source coverage is incomplete, as documented in README.md.
+Automatic approval review rejected saving SECRETS_SCAN_OMIT_KEYS because it would create a persistent scanning exception without specific approval. That draft was cancelled; no scanning exception was saved. Do not retry that rejected action indirectly.
 
-No personal-computer access, paid plans, purchased domains, paid data, or paid AI services are authorized.
+Safer correction is to recreate only ACTIVE_HOST with its same public value as a normal non-secret variable, production-only. Netlify cannot unmark an existing secret. Its deletion dialog says the action cannot be undone, so explicit confirmation is required before deleting this configuration entry and immediately recreating it. No real credential is being changed or exposed.
+
+## Next steps
+
+1. After explicit confirmation, replace only the misclassified ACTIVE_HOST configuration entry; leave all actual secrets and scanning protections intact.
+2. Retry one build and inspect final deployment and function/schedule metadata.
+3. Verify website routes, managed Auth sign-in, owner/member authorization, persisted report stages, background recovery and PDF download.
+4. Activate only Netlify in the database when deployment checks support cutover. Preserve one daily schedule and no Vercel scheduler.
+5. Verify the final usable public URL before claiming delivery.
+
+The previous 26 unit tests, cloud type check/build and development TCS pipeline test passed. Production owner sign-in and full report flow remain unverified. Current financial coverage is incomplete: TCS statements contain disclosed conflicts; other companies receive evidence-gap reports. Do not describe diagnostic PDFs as completed investment research.
+
+No personal-computer access, paid plans, purchased domains, paid data or paid AI.
